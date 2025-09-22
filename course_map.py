@@ -5,6 +5,14 @@ Map a Blackboard course's content layout and export as:
 - TXT (tree)
 - CSV (full data incl. embedded files/links)
 - HTML (collapsible, searchable tree with color-coded type chips)
+
+Credentials:
+- Pass via CLI (--key/--secret), or
+- Set env vars (BB_KEY / BB_SECRET), or
+- Provide a TOML file via --config, with:
+    [blackboard]
+    key = "..."
+    secret = "..."
 """
 
 import argparse
@@ -13,6 +21,8 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+from pathlib import Path
+
 import requests
 
 from cm_shared import safe_slug
@@ -20,9 +30,6 @@ from export_txt import draw_tree_txt
 from export_csv import write_csv_map
 from export_html import build_html
 
-# -------- built-in REST creds (can be overridden) --------
-APP_KEY = "KEY"
-APP_SECRET = "SECRET"
 
 # -------- HTTP helpers --------
 def get_token(host: str, key: str, secret: str) -> str:
@@ -32,22 +39,30 @@ def get_token(host: str, key: str, secret: str) -> str:
         raise SystemExit(f"OAuth token request failed: {resp.status_code} {resp.text}")
     return resp.json()["access_token"]
 
+
 def bb_get(session: requests.Session, url: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     r = session.get(url, params=params or {}, timeout=60)
     if not r.ok:
         raise RuntimeError(f"GET failed {r.status_code}: {url}\n{r.text}")
     return r.json()
 
+
 def normalize_next_url(host: str, next_url: str) -> str:
-    if next_url.startswith(("http://", "https://")): return next_url
-    if next_url.startswith("/"): return host.rstrip("/") + next_url
+    if next_url.startswith(("http://", "https://")):
+        return next_url
+    if next_url.startswith("/"):
+        return host.rstrip("/") + next_url
     return host.rstrip("/") + "/" + next_url
 
+
 def paged_get(session: requests.Session, host: str, url: str, params: Optional[Dict[str, Any]] = None) -> Iterable[Dict[str, Any]]:
-    data = bb_get(session, url, params=params); yield data
+    data = bb_get(session, url, params=params)
+    yield data
     while isinstance(data, dict) and data.get("paging") and data["paging"].get("nextPage"):
         next_url = normalize_next_url(host, data["paging"]["nextPage"])
-        data = bb_get(session, next_url); yield data
+        data = bb_get(session, next_url)
+        yield data
+
 
 # -------- course fetch + indexing --------
 def build_course_contents_url(host: str, course_id: str) -> str:
@@ -56,6 +71,7 @@ def build_course_contents_url(host: str, course_id: str) -> str:
         return f"{host}/learn/api/public/v1/courses/{cid}/contents"
     else:
         return f"{host}/learn/api/public/v1/courses/courseId:{cid}/contents"
+
 
 def resolve_course_pk1(session: requests.Session, host: str, course_id: str) -> str:
     cid = course_id.strip()
@@ -68,10 +84,11 @@ def resolve_course_pk1(session: requests.Session, host: str, course_id: str) -> 
     except Exception:
         return ""
 
+
 def fetch_course_meta(session: requests.Session, host: str, course_pk1: str) -> tuple[str, str]:
-    data = bb_get(session, f"{host}/learn/api/public/v1/courses/{course_pk1}",
-                  params={"fields": "id,courseId,name"})
+    data = bb_get(session, f"{host}/learn/api/public/v1/courses/{course_pk1}", params={"fields": "id,courseId,name"})
     return (data.get("courseId") or "", data.get("name") or "")
+
 
 def fetch_all_contents(session: requests.Session, host: str, course_id: str) -> List[Dict[str, Any]]:
     base = build_course_contents_url(host, course_id)
@@ -86,31 +103,90 @@ def fetch_all_contents(session: requests.Session, host: str, course_id: str) -> 
         items.extend(page.get("results", []))
     return items
 
+
 def index_by_id(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    return {it["id"]: it for it in items
-            if isinstance(it.get("id"), str) and it.get("id")}
+    return {it["id"]: it for it in items if isinstance(it.get("id"), str) and it.get("id")}
+
 
 def children_index(items: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     by_parent: Dict[str, List[Dict[str, Any]]] = {}
     for it in items:
         pid_raw = it.get("parentId")
-        pid: str = pid_raw if isinstance(pid_raw, str) else ""  # <- ensure str
+        pid: str = pid_raw if isinstance(pid_raw, str) else ""  # ensure str key
         by_parent.setdefault(pid, []).append(it)
 
     # stable sort per parent: position (ints first) then title
-    for pid, arr in by_parent.items():
-        arr.sort(key=lambda x: (
-            x.get("position") if isinstance(x.get("position"), int) else 10_000_000,
-            (x.get("title") or "")
-        ))
+    for _pid, arr in by_parent.items():
+        arr.sort(
+            key=lambda x: (
+                x.get("position") if isinstance(x.get("position"), int) else 10_000_000,
+                (x.get("title") or ""),
+            )
+        )
     return by_parent
+
+
+# -------- config / creds (TOML) --------
+def _load_toml(path: str) -> dict:
+    """Load TOML using stdlib tomllib (3.11+) or tomli if available."""
+    if not path:
+        return {}
+    p = Path(path)
+    if not p.exists():
+        return {}
+    data = p.read_bytes()
+    try:
+        import tomllib  # Python 3.11+
+        return tomllib.loads(data.decode("utf-8"))
+    except Exception:
+        try:
+            import tomli  # type: ignore
+        except Exception:
+            raise SystemExit(
+                "To use --config TOML on Python < 3.11, please `pip install tomli`, or upgrade to 3.11+."
+            )
+        return tomli.loads(data.decode("utf-8"))
+
+
+def resolve_credentials(args) -> tuple[Optional[str], Optional[str]]:
+    """
+    Precedence: CLI > Env > TOML (--config)
+    - CLI: --key / --secret
+    - Env: BB_KEY / BB_SECRET
+    - TOML: [blackboard] key/secret  (or top-level key/secret)
+    """
+    key = (args.key or os.getenv("BB_KEY") or "").strip()
+    secret = (args.secret or os.getenv("BB_SECRET") or "").strip()
+
+    if key and secret:
+        return key, secret
+
+    cfg_path = getattr(args, "config", None) or ""
+    if cfg_path:
+        cfg = _load_toml(cfg_path)
+        if isinstance(cfg, dict):
+            section = cfg.get("blackboard")
+            if isinstance(section, dict):
+                # read from [blackboard]
+                key = key or str(section.get("key") or "")
+                secret = secret or str(section.get("secret") or "")
+            else:
+                # or from top-level
+                key = key or str(cfg.get("key") or "")
+                secret = secret or str(cfg.get("secret") or "")
+
+    return (key or None, secret or None)
+
 
 # -------- CLI --------
 def parse_args():
     p = argparse.ArgumentParser(description="Map a Blackboard course's content layout (tree → TXT/CSV/HTML).")
     p.add_argument("--host", required=True, help="Base URL, e.g., https://blackboard.fvtc.edu")
-    p.add_argument("--key", default=os.getenv("BB_KEY", APP_KEY))
-    p.add_argument("--secret", default=os.getenv("BB_SECRET", APP_SECRET))
+
+    # credentials (use CLI, env, or TOML --config)
+    p.add_argument("--key", help="Blackboard REST app key (or set BB_KEY)")
+    p.add_argument("--secret", help="Blackboard REST app secret (or set BB_SECRET)")
+    p.add_argument("--config", help="Path to TOML config (e.g., secrets.toml)")
 
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--course-id")
@@ -121,6 +197,7 @@ def parse_args():
     p.add_argument("--tree-file-limit", type=int, default=10)
     p.add_argument("--no-tree-truncate", action="store_true")
 
+    # outputs (multi-select). If none chosen, default to HTML.
     p.add_argument("--txt", action="store_true", help="Write TXT tree output")
     p.add_argument("--csv", action="store_true", help="Write CSV map output")
     p.add_argument("--html", action="store_true", help="Write HTML output (default if no output flags given)")
@@ -132,7 +209,12 @@ def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
-    token = get_token(args.host, args.key, args.secret)
+    # resolve creds (CLI > env > TOML)
+    key, secret = resolve_credentials(args)
+    if not key or not secret:
+        sys.exit("Missing credentials: provide --key/--secret, or set BB_KEY/BB_SECRET, or pass --config secrets.toml")
+
+    token = get_token(args.host, key, secret)
     session = requests.Session()
     session.headers.update({"Authorization": f"Bearer {token}", "Accept": "application/json"})
 
@@ -143,8 +225,8 @@ def main():
             course_ids = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
 
     # decide outputs (default to HTML if none selected)
-    want_txt  = getattr(args, "txt", False)
-    want_csv  = getattr(args, "csv", False)
+    want_txt = getattr(args, "txt", False)
+    want_csv = getattr(args, "csv", False)
     want_html = getattr(args, "html", False)
     if not (want_txt or want_csv or want_html):
         want_html = True
@@ -181,9 +263,14 @@ def main():
             rows = []
             if want_txt or want_csv:
                 txt, rows = draw_tree_txt(
-                    course_header, roots, kids, by_id,
-                    not args.hide_bodies, args.host, course_pk1,
-                    tree_file_limit=tree_limit
+                    course_header,
+                    roots,
+                    kids,
+                    by_id,
+                    not args.hide_bodies,
+                    args.host,
+                    course_pk1,
+                    tree_file_limit=tree_limit,
                 )
                 if want_txt:
                     txt_path = os.path.join(args.out_dir, f"{base}_tree_{timestamp}.txt")
@@ -198,9 +285,14 @@ def main():
 
             if want_html:
                 html_doc = build_html(
-                    course_header, roots, kids, by_id,
-                    not args.hide_bodies, args.host, course_pk1,
-                    tree_file_limit=tree_limit
+                    course_header,
+                    roots,
+                    kids,
+                    by_id,
+                    not args.hide_bodies,
+                    args.host,
+                    course_pk1,
+                    tree_file_limit=tree_limit,
                 )
                 html_path = os.path.join(args.out_dir, f"{base}_tree_{timestamp}.html")
                 with open(html_path, "w", encoding="utf-8") as f:
@@ -211,6 +303,7 @@ def main():
 
         except Exception as e:
             print(f"{cid}: ERROR — {e}", file=sys.stderr)
+
 
 if __name__ == "__main__":
     main()
