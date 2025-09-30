@@ -1,30 +1,170 @@
 # Course Map for Blackboard Ultra
 
-A tiny command-line tool that **crawls a Blackboard Ultra course** via the REST API and exports the structure as:
+CLI tool that crawls a **Blackboard Ultra** course via the REST API and exports the structure as:
 
-* **HTML**: a collapsible, searchable tree with file badges, live highlights, and accurate match counts
-* **TXT**: a plain-text tree (easy to diff/share)
-* **CSV**: a flat map suitable for spreadsheets & audits
+* **HTML** – collapsible, searchable tree (with file badges + live highlights)
+* **TXT** – plain-text tree (diff-friendly)
+* **CSV** – flat map for audits/spreadsheets
 
-> Built for admins, instructional designers, and anyone who’s ever thought, “where did that one PDF go?” 🕵️‍♂️
+> For admins, IDs, and anyone who’s muttered “where did that PDF go?” 🕵️‍♂️
 
 ---
 
 ## ✨ Features
 
-* **One call → full course map** (recursive)
-* **Ultra Page + Document “merge”** so each Ultra Doc reads as a single node
-* **Embedded file detection** from Ultra Doc body (names, mime types, render mode)
-* **Embedded content links** extraction (IDs + link type)
+* One call → full recursive course map
+* **Ultra Page + Document merge** (each Ultra Doc reads as one node)
+* Parses **embedded files** (name, MIME, render mode) from Ultra Doc body
+* Extracts **embedded content links** (contentId + link type)
 * **HTML viewer**:
 
   * Instant, case-insensitive search across **titles + file badges**
-  * **Highlights** each match (`<mark>`) and outlines the matching row
-  * **Accurate match counts** (per occurrence, not per row)
-  * **Auto-expands** only the paths that match; closes stale panels as you edit the query
-  * “Expand all / Collapse all” buttons for quick skimming
-* **Output selection flags** (`--txt`, `--csv`, `--html`) — pick your favorites. If you pick none, **HTML** is the default.
-* **Stable CSV header** for easy automation
+  * Per-occurrence **match count** and `<mark>` highlights
+  * Auto-expands only paths that match; collapses stale panels as you edit
+  * “Expand all / Collapse all” for quick skims
+* Output selection flags: `--txt`, `--csv`, `--html` (if none, **HTML** by default)
+* Stable CSV header for automation
+
+---
+
+## 📦 Requirements
+
+* Python **3.9+**
+* `requests` (`pip install requests`)
+* Blackboard REST API app credentials
+
+---
+
+## 🔐 Credentials (TOML / Env / CLI)
+
+Precedence: **CLI (`--key --secret`) > Env (`BB_KEY`, `BB_SECRET`) > TOML (`--config`)**
+
+Example `secrets.toml`:
+
+```toml
+[blackboard]
+key = "YOUR_APP_KEY"
+secret = "YOUR_APP_SECRET"
+```
+
+Ignore your secrets and generated files:
+
+```gitignore
+# secrets
+secrets.toml
+.env
+*.env
+
+# generated outputs
+*_tree_*.html
+*_tree_*.txt
+*_map_*.csv
+# or put outputs in a folder and ignore it:
+# /artifacts/
+```
+
+---
+
+## 🚀 Quick start
+
+```bash
+# 1) Install deps
+pip install requests
+
+# 2) Run (HTML is default if no outputs are specified)
+python course_map.py \
+  --host https://<your-bb-host> \
+  --course-id <COURSE_ID_OR_PK1> \
+  --config /path/to/secrets.toml
+```
+
+Batch mode (file of IDs, one per line; `#` comments allowed):
+
+```bash
+python course_map.py \
+  --host https://<your-bb-host> \
+  --courses-file courses.txt \
+  --config /path/to/secrets.toml
+```
+
+---
+
+## 🛠 CLI options
+
+**Required**
+
+* `--host` Base URL, e.g. `https://blackboard.example.edu`
+* One of: `--course-id <id>` **or** `--courses-file <path>`
+
+**Auth**
+
+* `--key <app key>` / `--secret <app secret>` (or env `BB_KEY` / `BB_SECRET`)
+* `--config <secrets.toml>`
+
+**General**
+
+* `--out-dir <dir>` output directory (default: current)
+* `--hide-bodies` hide “UltraBody” nodes
+* `--tree-file-limit <n>` max file badges shown per node (default: 10)
+* `--no-tree-truncate` show all file badges (overrides limit)
+
+**Outputs** (multi-select; **default = HTML** if none specified)
+
+* `--txt`  write text tree
+* `--csv`  write CSV map
+* `--html` write HTML viewer
+
+---
+
+## 🧪 Examples
+
+HTML only (default):
+
+```bash
+python course_map.py --host https://blackboard.example.edu --course-id 10501107-1-2025fall --config secrets.toml
+```
+
+TXT + CSV (no HTML):
+
+```bash
+python course_map.py --host https://blackboard.example.edu --course-id 10501107-1-2025fall --txt --csv --config secrets.toml
+```
+
+All three:
+
+```bash
+python course_map.py --host https://blackboard.example.edu --course-id 10501107-1-2025fall --txt --csv --html --config secrets.toml
+```
+
+**Output filenames**
+
+```
+<course>_tree_YYYYMMDD-HHMMSS.html
+<course>_tree_YYYYMMDD-HHMMSS.txt
+<course>_map_YYYYMMDD-HHMMSS.csv
+```
+
+---
+
+## 📄 CSV columns
+
+`course_id`, `id` (merged for Ultra Page + Doc), `parentId`, `title`, `handler_id`, `type`,
+`availability`, `position`, `depth`, `path`, `web_url`,
+`embedded_file_count`, `embedded_files` (`name|mime|render; …`),
+`embedded_content_links` (`contentId|linkType; …`)
+
+---
+
+## 🔎 HTML search behavior
+
+* Searches **summary titles** and **file badges** (even inside nested `<details>`)
+* Each keystroke:
+
+  * closes only panels opened by the last search
+  * re-highlights matches with `<mark class="hit">`
+  * opens ancestors so hits are visible
+  * counts **every occurrence**, not just rows
+* Scrolls first hit into view (nice little UX bow 🎁)
 
 ---
 
@@ -40,152 +180,16 @@ export_html.py     # HTML renderer (search + highlight scripts embedded)
 
 ---
 
-## 📦 Requirements
-
-* Python **3.9+**
-* `requests` (`pip install requests`)
-* Blackboard REST API app credentials
-
----
-
-## 🔐 Authentication
-
-The tool uses OAuth2 client credentials:
-
-* **Defaults** can be overridden by environment variables or flags.
-* Environment variables supported:
-
-  * `BB_KEY`, `BB_SECRET`
-
----
-
-## 🚀 Quick start
-
-```bash
-# 1) Install dependencies
-pip install requests
-
-# 2) Run (HTML by default)
-python course_map.py \
-  --host https://<your-bb-host> \
-  --course-id <COURSE_ID_OR_PK1>
-```
-
-You can also pass a file of IDs:
-
-```bash
-python course_map.py \
-  --host https://<your-bb-host> \
-  --courses-file courses.txt
-```
-
-`courses.txt` is one ID per line; `#` comments are ignored.
-
----
-
-## 🛠 CLI options
-
-Required:
-
-* `--host` Base URL, e.g., `https://blackboard.example.edu`
-* One of:
-
-  * `--course-id <id>` (courseId or pk1 like `_12345_1`)
-  * `--courses-file <path>`
-
-General:
-
-* `--out-dir <dir>` Output directory (default: current)
-* `--hide-bodies` Hide “UltraBody” nodes in outputs
-* `--tree-file-limit <n>` Max file badges shown per node in HTML/TXT (default: 10)
-* `--no-tree-truncate` Show all file badges (overrides limit)
-
-Output selection (multi-select; **if none set → HTML only**):
-
-* `--txt`   Write the text tree
-* `--csv`   Write the CSV map
-* `--html`  Write the HTML viewer
-
-Auth overrides:
-
-* `--key <app key>` and `--secret <app secret>`
-
-  * (or use `BB_KEY` / `BB_SECRET` env vars)
-
----
-
-## 🧪 Examples
-
-**HTML only (default):**
-
-```bash
-python course_map.py --host https://blackboard.example.edu --course-id 10501107-1-2025fall
-```
-
-**TXT + CSV (no HTML):**
-
-```bash
-python course_map.py --host https://blackboard.example.edu --course-id 10501107-1-2025fall --txt --csv
-```
-
-**All three:**
-
-```bash
-python course_map.py --host https://blackboard.example.edu --course-id 10501107-1-2025fall --txt --csv --html
-```
-
-Outputs are named like:
-
-```
-<course>_tree_YYYYMMDD-HHMMSS.html
-<course>_tree_YYYYMMDD-HHMMSS.txt
-<course>_map_YYYYMMDD-HHMMSS.csv
-```
-
----
-
-## 📄 CSV columns
-
-* `course_id`
-* `id` (or merged IDs for Ultra Page + Doc)
-* `parentId`
-* `title`
-* `handler_id`
-* `type`
-* `availability`
-* `position`
-* `depth`
-* `path` (breadcrumb string)
-* `web_url` (for external links)
-* `embedded_file_count`
-* `embedded_files` (`name|mime|render; ...`)
-* `embedded_content_links` (`contentId|linkType; ...`)
-
----
-
-## 🧩 How the HTML search works (cool bits)
-
-* Searches **summary titles** and **file badges** (even when the badges live inside nested `<details>`).
-* On each keystroke:
-
-  * Closes only the `<details>` it opened last time.
-  * Highlights current matches (`<mark class="hit">`) and counts **every match**.
-  * Auto-expands from the matched node up to the root so hits are visible.
-* Optional nicety: the first hit is scrolled into view.
-
-If you ever embed the JS in a Python f-string, braces/backslashes are already escaped in the generator. No gremlins. 🧙
-
----
-
 ## 🧯 Troubleshooting
 
-* **401/403**: verify REST app permissions and the host base URL.
-* **Nothing returns**: confirm the courseId vs pk1. You can pass either; the script resolves pk1 automatically.
-* **Search not finding files in HTML**: badges live inside `<details>`—the built-in script already accounts for that.
-* **Match count looks off**: counts **occurrences**, not rows; a single Ultra Doc with 3 PDFs = 3 matches.
+* **401/403** → verify REST app permissions and host base URL
+* **No results** → check `courseId` vs `pk1`; script resolves pk1 for you
+* **HTML search misses files** → badges live inside `<details>`; the script accounts for this (ensure you’re on the latest build)
+* **Match count seems low** → it counts **occurrences**; one Ultra Doc with three PDFs = **3** matches
 
 ---
 
 ## 👋 Credits
 
-Built with ❤️ for Blackboard admins and course wranglers. If this helps you find that one elusive `.pptx`, buy yourself a donut—you’ve earned it. 🍩
+Built with ❤️ for Blackboard admins and course wranglers.
+If this helps you find that one elusive `.pptx`, treat yourself to a donut. 🍩
