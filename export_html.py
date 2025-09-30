@@ -4,7 +4,8 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import html as _html
 from cm_shared import (
     node_type, is_ultra_page, is_document_handler, external_link_url,
-    parse_embedded_files_from_body, parse_embedded_content_links
+    parse_embedded_files_from_body, parse_embedded_content_links,
+    parse_inline_urls, parse_inline_videostudio
 )
 
 def build_html(course_label: str,
@@ -17,6 +18,8 @@ def build_html(course_label: str,
                tree_file_limit: Optional[int]) -> str:
     """
     Collapsible HTML tree with file badges + improved search/highlight (live, correct match counts).
+    Adds Inline URLs + Inline Video Studio capture from Ultra document bodies,
+    and makes stand-alone Video Studio items show a clickable URL in the title line.
     """
 
     # ----- tiny helpers -----
@@ -37,6 +40,28 @@ def build_html(course_label: str,
             "FILE": "chip-file",
         }.get(typ, "chip-unknown")
         return f'<span class="chip {cls}">{_html.escape(typ)}</span>'
+
+    def inline_urls_block(urls: List[Tuple[str, str]]) -> str:
+        if not urls:
+            return ""
+        parts = ['<div class="files">[Inline URLs: ']
+        parts.append("; ".join(
+            f'<a href="{_html.escape(h)}" target="_blank" rel="noopener">{_html.escape(t or h)}</a>'
+            for h, t in urls
+        ))
+        parts.append("]</div>")
+        return "".join(parts)
+
+    def inline_videostudio_block(vs: List[Tuple[str, str]]) -> str:
+        if not vs:
+            return ""
+        parts = ['<div class="files">[Inline Video Studio: ']
+        parts.append("; ".join(
+            f'<a href="{_html.escape(href)}" target="_blank" rel="noopener">{_html.escape(vid or "Open video")}</a>'
+            for vid, href in vs
+        ))
+        parts.append("]</div>")
+        return "".join(parts)
 
     def url_for_display(item: Dict[str, Any]) -> str:
         from cm_shared import is_external_link
@@ -67,7 +92,8 @@ def build_html(course_label: str,
 
     def body_source_for_node(node: Dict[str, Any]) -> str:
         typ = node_type(node)
-        if typ in ("ULTRA DOC", "Document", "UltraBody"):
+        # Include VideoStudio here so we can parse its body for the anchor href
+        if typ in ("ULTRA DOC", "Document", "UltraBody", "VideoStudio"):
             return node.get("body") or ""
         if is_ultra_page(node):
             for c in kids.get(node.get("id", ""), []):
@@ -75,11 +101,14 @@ def build_html(course_label: str,
                     return c.get("body") or ""
         return ""
 
-    def embedded_for_node(node: Dict[str, Any]) -> Tuple[List[Dict[str, str]], List[Tuple[str, str]]]:
+    # return files, embedded content links, inline URLs, inline Video Studio
+    def embedded_for_node(node: Dict[str, Any]) -> Tuple[List[Dict[str, str]], List[Tuple[str, str]], List[Tuple[str, str]], List[Tuple[str, str]]]:
         body = body_source_for_node(node)
         files = parse_embedded_files_from_body(body)
         links = [(cid, lt) for (cid, lt) in parse_embedded_content_links(body) if (lt or "").lower() != "knowledgecheck"]
-        return files, links
+        inline_urls = parse_inline_urls(body)
+        vs = parse_inline_videostudio(body)
+        return files, links, inline_urls, vs
 
     def try_ultra_merge(node: Dict[str, Any]):
         if not is_ultra_page(node):
@@ -109,12 +138,21 @@ def build_html(course_label: str,
     def render_node(node: Dict[str, Any]) -> str:
         typ = node_type(node)
         title = (node.get("title") or "").strip()
+
+        # Prefer external link URL when present…
         href = url_for_display(node)
+
+        # …but for stand-alone VideoStudio items, fall back to the first inline href in the body
+        if typ == "VideoStudio" and not href:
+            body = body_source_for_node(node)
+            vs_first = parse_inline_videostudio(body) or []
+            if vs_first:
+                href = vs_first[0][1]  # (videoId, href)
 
         merged = try_ultra_merge(node)
         if merged:
             merged_title, doc_child, merged_children = merged
-            files, links = embedded_for_node(node)
+            files, links, inline_urls, vs = embedded_for_node(node)
             parts = [
                 "<li><details>",
                 f"<summary>{chip('ULTRA DOC')}{_html.escape(merged_title)}</summary>",
@@ -124,6 +162,10 @@ def build_html(course_label: str,
             if links:
                 links_txt = "; ".join(f"{_html.escape(cid)} ({_html.escape(lt)})" for cid, lt in links)
                 parts.append(f'<div class="files">[Embedded content links: {links_txt}]</div>')
+            if inline_urls:
+                parts.append(inline_urls_block(inline_urls))
+            if vs:
+                parts.append(inline_videostudio_block(vs))
             if merged_children:
                 parts.append("<ul>")
                 for c in merged_children:
@@ -133,19 +175,30 @@ def build_html(course_label: str,
             parts.append("</details></li>")
             return "".join(parts)
 
-        label = f"{chip(typ)}{_html.escape(title)}"
-        url_suffix = f'  [URL: <a href="{_html.escape(href)}" target="_blank" rel="noopener">{_html.escape(href)}</a>]' if href else ""
+        if typ == "VideoStudio" and href:
+            label = f'{chip(typ)}<a href="{_html.escape(href)}" target="_blank" rel="noopener">{_html.escape(title or "Video")}</a>'
+            url_suffix = ""  # no trailing [URL: …]
+        else:
+            label = f"{chip(typ)}{_html.escape(title)}"
+            url_suffix = f'  [URL: <a href="{_html.escape(href)}" target="_blank" rel="noopener">{_html.escape(href)}</a>]' if href else ""
 
         children = kids.get(node.get("id", ""), [])
         show_children = [c for c in children if show_bodies or node_type(c) != "UltraBody"]
 
         extras_html = ""
         if typ in ("ULTRA DOC", "Document") or is_ultra_page(node):
-            files, links = embedded_for_node(node)
+            # For Ultra Docs, still show Inline URLs + Inline Video Studio blocks
+            files, links, inline_urls, vs = embedded_for_node(node)
             if files: extras_html += render_files_badges(files)
             if links:
                 links_txt = "; ".join(f"{_html.escape(cid)} ({_html.escape(lt)})" for cid, lt in links)
                 extras_html += f'<div class="files">[Embedded content links: {links_txt}]</div>'
+            if inline_urls:
+                extras_html += inline_urls_block(inline_urls)
+            if vs:
+                extras_html += inline_videostudio_block(vs)
+        elif typ == "VideoStudio":
+            pass
 
         if show_children:
             out = ["<li><details>"]

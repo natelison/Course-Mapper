@@ -26,7 +26,7 @@ def is_ultra_page(item: Dict[str, Any]) -> bool:
 def is_document_handler(item: Dict[str, Any]) -> bool:
     return handler_id(item).startswith("resource/x-bb-document")
 
-# -------- type classification (matches your previous logic) --------
+# -------- type classification --------
 def node_type(item: Dict[str, Any]) -> str:
     h = (item.get("contentHandler") or {}).get("id", "").lower()
     title_lc = (item.get("title") or "").strip().lower()
@@ -73,6 +73,14 @@ _CONTENT_LINK_PAIR_RE = re.compile(
     r'data-content-link\s*=\s*"([^"]+)"[^>]*data-content-link-type\s*=\s*"([^"]+)"'
     r'|data-content-link-type\s*=\s*"([^"]+)"[^>]*data-content-link\s*=\s*"([^"]+)"',
     re.I
+)
+# Plain inline URLs inside Ultra body HTML
+_INLINE_A_RE = re.compile(r'<a\b([^>]*?)\bhref="(https?://[^"]+)"([^>]*)>(.*?)</a>', re.I | re.S)
+
+# Inline Video Studio anchor: <a ... data-bbtype="video-studio" data-bbfile='{"videoId":"..."}' href="...">
+_VS_ANCHOR_RE = re.compile(
+    r'<a\b([^>]*\bdata-bbtype\s*=\s*"video-studio"[^>]*)\bhref="([^"]+)"',
+    re.I | re.S
 )
 
 OPENXML_MAP = {
@@ -124,6 +132,50 @@ def parse_embedded_content_links(body_html: str) -> List[Tuple[str, str]]:
             out.append((cid, ltype))
     return out
 
+def parse_inline_urls(body_html: str) -> List[Tuple[str, str]]:
+    """Extract plain inline URLs (href, text) from body HTML, skipping bbfile/content-link anchors."""
+    if not body_html:
+        return []
+    out: List[Tuple[str, str]] = []
+    for m in _INLINE_A_RE.finditer(body_html):
+        a_prefix = (m.group(1) or "") + (m.group(3) or "")
+        a_prefix_lc = a_prefix.lower()
+        if ("data-bbfile" in a_prefix_lc) or ("data-content-link" in a_prefix_lc):
+            continue
+        href = (m.group(2) or "").strip()
+        raw_text = (m.group(4) or "").strip()
+        text = re.sub(r"<[^>]+>", "", raw_text)
+        text = html.unescape(text).strip()
+        if href:
+            out.append((href, text or href))
+    return out
+
+def parse_inline_videostudio(body_html: str) -> List[Tuple[str, str]]:
+    """
+    Extract inline Video Studio anchors as (videoId, href).
+    videoId may be empty if data-bbfile JSON is missing/unreadable.
+    """
+    if not body_html:
+        return []
+    out: List[Tuple[str, str]] = []
+    for m in _VS_ANCHOR_RE.finditer(body_html):
+        attrs = m.group(1) or ""
+        href = (m.group(2) or "").strip()
+        vid = ""
+        try:
+            # data-bbfile may be single- or double-quoted; pick either
+            bbfile_m = re.search(r'data-bbfile\s*=\s*"(.*?)"|data-bbfile\s*=\s*\'(.*?)\'', attrs, re.I | re.S)
+            if bbfile_m:
+                raw = bbfile_m.group(1) if bbfile_m.group(1) is not None else bbfile_m.group(2)
+                decoded = html.unescape(raw)
+                obj = json.loads(decoded)
+                vid = str(obj.get("videoId") or obj.get("videoid") or "").strip()
+        except Exception:
+            pass
+        if href:
+            out.append((vid, href))
+    return out
+
 # -------- shared formatting helpers --------
 def safe_slug(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", (s or "").strip()).strip("_")
@@ -146,6 +198,12 @@ def files_csv_field(files: List[Dict[str, str]]) -> str:
 
 def content_links_csv_field(links: List[Tuple[str, str]]) -> str:
     return "; ".join([f"{cid}|{lt}" for cid, lt in links])
+
+def inline_urls_csv_field(urls: List[Tuple[str, str]]) -> str:
+    return "; ".join([f"{txt}|{href}" for href, txt in urls])
+
+def inline_videostudio_csv_field(vs: List[Tuple[str, str]]) -> str:
+    return "; ".join([f"{vid}|{href}" for vid, href in vs])
 
 def format_files_for_tree(files: List[Dict[str, str]], limit: Optional[int]) -> str:
     parts: List[str] = []

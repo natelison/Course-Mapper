@@ -2,8 +2,8 @@
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from cm_shared import (
     node_type, is_ultra_page, is_document_handler,
-    parse_embedded_files_from_body, parse_embedded_content_links,
-    files_csv_field, content_links_csv_field, compute_path
+    parse_embedded_files_from_body, parse_embedded_content_links, parse_inline_urls, parse_inline_videostudio,
+    files_csv_field, content_links_csv_field, inline_urls_csv_field, inline_videostudio_csv_field, compute_path
 )
 
 def draw_tree_txt(course_label: str,
@@ -49,6 +49,8 @@ def draw_tree_txt(course_label: str,
                 body = doc_child.get("body") or ""
                 files = parse_embedded_files_from_body(body)
                 links = parse_embedded_content_links(body)
+                inline_urls = parse_inline_urls(body)
+                vs = parse_inline_videostudio(body)
 
                 branch = "└─ " if is_last else "├─ "
                 pos_s = str(parent_pos) if isinstance(parent_pos, int) else ""
@@ -58,6 +60,10 @@ def draw_tree_txt(course_label: str,
                     print_helper(prefix, is_last, format_files_for_tree(files, tree_file_limit))
                 if links:
                     print_helper(prefix, is_last, "Embedded content links: " + "; ".join([f"{cid} ({lt or 'link'})" for cid, lt in links]))
+                if inline_urls:
+                    print_helper(prefix, is_last, "Inline URLs: " + "; ".join([f"{txt} ({href})" for href, txt in inline_urls]))
+                if vs:
+                    print_helper(prefix, is_last, "Inline Video Studio: " + "; ".join([f"{(vid or 'video')} ({href})" for vid, href in vs]))
 
                 rows.append({
                     "course_id": course_pk1 or course_label,
@@ -74,6 +80,8 @@ def draw_tree_txt(course_label: str,
                     "embedded_file_count": str(len(files)),
                     "embedded_files": files_csv_field(files),
                     "embedded_content_links": content_links_csv_field(links),
+                    "inline_urls": inline_urls_csv_field(inline_urls),
+                    "inline_videostudio": inline_videostudio_csv_field(vs),
                 })
 
                 merged_children = []
@@ -110,10 +118,18 @@ def draw_tree_txt(course_label: str,
                 print_helper(prefix, is_last, format_files_for_tree(files, tree_file_limit))
             if links:
                 print_helper(prefix, is_last, "Embedded content links: " + "; ".join([f"{cid} ({lt or 'link'})" for cid, lt in links]))
+            inline_urls = parse_inline_urls(body)
+            if inline_urls:
+                print_helper(prefix, is_last, "Inline URLs: " + "; ".join([f"{txt} ({href})" for href, txt in inline_urls]))
+            vs = parse_inline_videostudio(body)
+            if vs:
+                print_helper(prefix, is_last, "Inline Video Studio: " + "; ".join([f"{(vid or 'video')} ({href})" for vid, href in vs]))
             extra = {
                 "embedded_file_count": str(len(files)),
                 "embedded_files": files_csv_field(files),
                 "embedded_content_links": content_links_csv_field(links),
+                "inline_urls": inline_urls_csv_field(inline_urls),
+                "inline_videostudio": inline_videostudio_csv_field(vs),
             }
 
         rows.append({
@@ -131,6 +147,8 @@ def draw_tree_txt(course_label: str,
             "embedded_file_count": extra.get("embedded_file_count", ""),
             "embedded_files": extra.get("embedded_files", ""),
             "embedded_content_links": extra.get("embedded_content_links", ""),
+            "inline_urls": extra.get("inline_urls", ""),
+            "inline_videostudio": extra.get("inline_videostudio", ""),
         })
 
         ch = kids.get(nid, [])
