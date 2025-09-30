@@ -5,8 +5,9 @@ import html as _html
 from cm_shared import (
     node_type, is_ultra_page, is_document_handler, external_link_url,
     parse_embedded_files_from_body, parse_embedded_content_links,
-    parse_inline_urls, parse_inline_videostudio
+    parse_inline_urls, parse_inline_videostudio, mime_family
 )
+
 
 def build_html(course_label: str,
                roots: List[Dict[str, Any]],
@@ -73,10 +74,28 @@ def build_html(course_label: str,
             return "ext-" + n.rsplit(".", 1)[-1]
         return ""
 
+    def display_name_with_ext(name: str, mime: str) -> str:
+        """If name lacks an extension, append one derived from MIME."""
+        n = (name or "").strip()
+        if not n:
+            return n
+        if "." in n:
+            return n
+        ext = mime_family(mime or "")
+        if not ext:
+            return n
+        # normalize a couple common MIME endings
+        ext = {"jpeg": "jpg", "svg+xml": "svg"}.get(ext, ext)
+        return f"{n}.{ext}"
+
     def files_to_badges(files: List[Dict[str, str]], limit: Optional[int]) -> str:
         if not files:
             return ""
-        names = [f.get("name", "") for f in files if f.get("name")]
+        # append extension from MIME when the display name has no ".ext"
+        names = [
+            display_name_with_ext(f.get("name", ""), f.get("mime", ""))
+            for f in files if f.get("name")
+        ]
         if limit is not None and len(names) > limit:
             extra = len(names) - limit
             names = names[:limit] + [f"… (+{extra} more)"]
@@ -286,7 +305,7 @@ details>summary:hover{{background:var(--surface-2)}} details[open]>summary{{colo
 .chip-file{{background:linear-gradient(180deg,var(--stone-500),color-mix(in oklab,var(--stone-500) 68%,#000))}}
 .chip-unknown{{background:linear-gradient(180deg,var(--slate-400),color-mix(in oklab,var(--slate-400) 65%,#000))}}
 #tree li:hover{{background:color-mix(in oklab,var(--surface-2) 72%,transparent);border-radius:8px}}
-#tree a{{color:var(--blue-500);text-decoration:underline dotted}} #tree a:hover{{text-decoration:underline}}
+#tree a{{color:var(--blue-500);text-decoration:underline}} #tree a:hover{{text-decoration:underline}}
 .hidden{{display:none !important}}
 :focus-visible{{outline:3px solid color-mix(in oklab,var(--ring) 35%,transparent);outline-offset:2px;border-radius:8px}}
 @media print{{body{{margin:12px;background:#fff}} .controls,#count,.page-header{{display:none !important}} #tree{{box-shadow:none;border-color:#ddd}} a[href^="http"]::after{{content:" (" attr(href) ")";color:#555;font-size:.9em}}}}
