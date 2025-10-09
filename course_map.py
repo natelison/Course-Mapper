@@ -7,10 +7,11 @@ Map a Blackboard course's content layout and export as:
 - HTML (collapsible, searchable tree with color-coded type chips)
 
 Credentials:
-- Pass via CLI (--key/--secret), or
-- Set env vars (BB_KEY / BB_SECRET), or
+- Pass via CLI (--key/--secret/--host), or
+- Set env vars (BB_KEY / BB_SECRET / BB_HOST), or
 - Provide a TOML file via --config, with:
     [blackboard]
+    host = "https://blackboard.example.edu"
     key = "..."
     secret = "..."
 """
@@ -148,18 +149,16 @@ def _load_toml(path: str) -> dict:
         return tomli.loads(data.decode("utf-8"))
 
 
-def resolve_credentials(args) -> tuple[Optional[str], Optional[str]]:
+def resolve_credentials(args) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Precedence: CLI > Env > TOML (--config)
-    - CLI: --key / --secret
-    - Env: BB_KEY / BB_SECRET
-    - TOML: [blackboard] key/secret  (or top-level key/secret)
+    - CLI: --key / --secret / --host
+    - Env: BB_KEY / BB_SECRET / BB_HOST
+    - TOML: [blackboard] host/key/secret  (or top-level host/key/secret)
     """
     key = (args.key or os.getenv("BB_KEY") or "").strip()
     secret = (args.secret or os.getenv("BB_SECRET") or "").strip()
-
-    if key and secret:
-        return key, secret
+    host = (getattr(args, "host", "") or os.getenv("BB_HOST") or "").strip()
 
     cfg_path = getattr(args, "config", None) or ""
     if cfg_path:
@@ -168,20 +167,22 @@ def resolve_credentials(args) -> tuple[Optional[str], Optional[str]]:
             section = cfg.get("blackboard")
             if isinstance(section, dict):
                 # read from [blackboard]
+                host = host or str(section.get("host") or "")
                 key = key or str(section.get("key") or "")
                 secret = secret or str(section.get("secret") or "")
             else:
                 # or from top-level
+                host = host or str(cfg.get("host") or "")
                 key = key or str(cfg.get("key") or "")
                 secret = secret or str(cfg.get("secret") or "")
 
-    return (key or None, secret or None)
+    return (key or None, secret or None, host or None)
 
 
 # -------- CLI --------
 def parse_args():
     p = argparse.ArgumentParser(description="Map a Blackboard course's content layout (tree → TXT/CSV/HTML).")
-    p.add_argument("--host", required=True, help="Base URL, e.g., https://blackboard.fvtc.edu")
+    p.add_argument("--host", help="Base URL, e.g., https://blackboard.fvtc.edu (or in secrets.toml)")
 
     # credentials (use CLI, env, or TOML --config)
     p.add_argument("--key", help="Blackboard REST app key (or set BB_KEY)")
@@ -210,11 +211,11 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
 
     # resolve creds (CLI > env > TOML)
-    key, secret = resolve_credentials(args)
-    if not key or not secret:
-        sys.exit("Missing credentials: provide --key/--secret, or set BB_KEY/BB_SECRET, or pass --config secrets.toml")
+    key, secret, host = resolve_credentials(args)
+    if not key or not secret or not host:
+        sys.exit("Missing credentials: please provide host/key/secret via CLI, env, or --config secrets.toml")
 
-    token = get_token(args.host, key, secret)
+    token = get_token(host, key, secret)
     session = requests.Session()
     session.headers.update({"Authorization": f"Bearer {token}", "Accept": "application/json"})
 
@@ -235,7 +236,7 @@ def main():
 
     for cid in course_ids:
         try:
-            items = fetch_all_contents(session, args.host, cid)
+            items = fetch_all_contents(session, host, cid)
             by_id = index_by_id(items)
             kids = children_index(items)
             roots = kids.get("", [])
@@ -246,11 +247,11 @@ def main():
                 if pid and pid not in by_id and it not in roots:
                     roots.append(it)
 
-            course_pk1 = resolve_course_pk1(session, args.host, cid)
+            course_pk1 = resolve_course_pk1(session, host, cid)
             course_code, course_name = ("", "")
             if course_pk1:
                 try:
-                    course_code, course_name = fetch_course_meta(session, args.host, course_pk1)
+                    course_code, course_name = fetch_course_meta(session, host, course_pk1)
                 except Exception:
                     pass
 
@@ -268,7 +269,7 @@ def main():
                     kids,
                     by_id,
                     not args.hide_bodies,
-                    args.host,
+                    host,
                     course_pk1,
                     tree_file_limit=tree_limit,
                 )
@@ -290,7 +291,7 @@ def main():
                     kids,
                     by_id,
                     not args.hide_bodies,
-                    args.host,
+                    host,
                     course_pk1,
                     tree_file_limit=tree_limit,
                 )
