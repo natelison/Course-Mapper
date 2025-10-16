@@ -119,6 +119,13 @@ def build_html(course_label: str,
                 if is_document_handler(c):
                     return c.get("body") or ""
         return ""
+    
+    def standalone_file_from_node(node: Dict[str, Any]) -> List[Dict[str, str]]:
+        ch = node.get("contentHandler") or {}
+        f  = ch.get("file") or {}
+        name = (f.get("fileName") or "").strip()
+        mime = (f.get("mimeType") or "").strip()
+        return [{"name": name, "mime": mime, "render": "embed"}] if name or mime else []
 
     # return files, embedded content links, inline URLs, inline Video Studio
     def embedded_for_node(node: Dict[str, Any]) -> Tuple[List[Dict[str, str]], List[Tuple[str, str]], List[Tuple[str, str]], List[Tuple[str, str]]]:
@@ -216,6 +223,13 @@ def build_html(course_label: str,
                 extras_html += inline_urls_block(inline_urls)
             if vs:
                 extras_html += inline_videostudio_block(vs)
+                
+        elif typ in ("FILE", "Image", "PDF", "Video", "Audio"):
+            # Show a single badge for the stand-alone file (uses fileName + mime)
+            files = standalone_file_from_node(node)
+            if files:
+                extras_html += render_files_badges(files)
+
         elif typ == "VideoStudio":
             pass
 

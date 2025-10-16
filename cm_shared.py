@@ -45,8 +45,24 @@ def node_type(item: Dict[str, Any]) -> str:
     if "courselink" in h:
         return "COURSE LINK"
     if "file" in h:
-        return "FILE"
+        ch = item.get("contentHandler") or {}
+        f  = ch.get("file") or {}
+        mime = (f.get("mimeType") or "").strip().lower()
+        fam  = mime_family(mime)
+        # Normalize jpeg -> jpg for friendlier display
+        fam = {"jpeg": "jpg", "svg+xml": "svg"}.get(fam, fam)
 
+        # Map to nicer high-level types for badges/eyes
+        if fam in {"jpg", "png", "gif", "webp", "svg"}:
+            return "Image"
+        if fam in {"pdf"}:
+            return "PDF"
+        if fam in {"mp4", "quicktime", "webm"}:
+            return "Video"
+        if fam in {"mp3", "wav", "mpeg"}:
+            return "Audio"
+        return "FILE"
+    
     if "asmt-survey-link" in h:
         return "FORM"
     if "asmt-test-link" in h or "assignment" in h:

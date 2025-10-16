@@ -2,9 +2,12 @@
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from cm_shared import (
     node_type, is_ultra_page, is_document_handler,
-    parse_embedded_files_from_body, parse_embedded_content_links, parse_inline_urls, parse_inline_videostudio,
-    files_csv_field, content_links_csv_field, inline_urls_csv_field, inline_videostudio_csv_field, compute_path
+    parse_embedded_files_from_body, parse_embedded_content_links, 
+    parse_inline_urls, parse_inline_videostudio,
+    files_csv_field, content_links_csv_field, 
+    inline_urls_csv_field, inline_videostudio_csv_field, compute_path
 )
+
 
 def draw_tree_txt(course_label: str,
                   roots: List[Dict[str, Any]],
@@ -131,6 +134,24 @@ def draw_tree_txt(course_label: str,
                 "inline_urls": inline_urls_csv_field(inline_urls),
                 "inline_videostudio": inline_videostudio_csv_field(vs),
             }
+
+        if typ in {"FILE", "Image", "PDF", "Video", "Audio"}:
+            ch = node.get("contentHandler") or {}
+            f  = ch.get("file") or {}
+            name = (f.get("fileName") or "").strip()
+            mime = (f.get("mimeType") or "").strip()
+            files = [{"name": name, "mime": mime, "render": "embed"}] if (name or mime) else []
+            if files:
+                from cm_shared import format_files_for_tree
+                print_helper(prefix, is_last, format_files_for_tree(files, tree_file_limit))
+                extra = {
+                    "embedded_file_count": "1",
+                    "embedded_files": files_csv_field(files),
+                    "embedded_content_links": "",
+                    "inline_urls": "",
+                    "inline_videostudio": "",
+                }
+        
 
         rows.append({
             "course_id": course_pk1 or course_label,
